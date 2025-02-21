@@ -6,16 +6,15 @@ class Cube {
     this.xw = xw;
     this.yw = yw;
     this.zw = zw;
-    this.vertices = [{ x: x + xw, y: y + yw, z: z + 2 * zw },
-    { x: x - xw, y: y + yw, z: 2 * zw },
-    { x: x + xw, y: y - yw, z: 2 * zw },
-    { x: x - xw, y: y - yw, z: 2 * zw },
-    { x: x + xw, y: y + yw, z: z },
-    { x: x - xw, y: y + yw, z: z },
-    { x: x + xw, y: y - yw, z: z },
-    { x: x - xw, y: y - yw, z: z }];
-    console.log(this.vertices);
-
+    this.vertices = [
+      { x: x + xw, y: y + yw, z: z + zw + 0.5 },
+      { x: x - xw, y: y + yw, z: z + zw + 0.5 },
+      { x: x + xw, y: y - yw, z: z + zw + 0.5 },
+      { x: x - xw, y: y - yw, z: z + zw + 0.5 },
+      { x: x + xw, y: y + yw, z: z - zw + 0.5 },
+      { x: x - xw, y: y + yw, z: z - zw + 0.5 },
+      { x: x + xw, y: y - yw, z: z - zw + 0.5 },
+      { x: x - xw, y: y - yw, z: z - zw + 0.5 }];
   }
   rotate(xa = 0, ya = 0, za = 0) {
     const cosX = Math.cos(xa), sinX = Math.sin(xa);
@@ -106,42 +105,72 @@ async function initWebGPU() {
   });
 
   const cube = new Cube()
-  cube.rotate(Math.PI / 4, Math.PI / 4, Math.PI / 4)
-  const vertices = cube.getVertices();
+  cube.rotate(Math.PI / 4, Math.PI / 3, Math.PI / 4)
 
 
-  const vertexBuffer = device.createBuffer({ //creates a buffer (memory gpu can access)
+  // Create the buffers once
+  const vertexBuffer = createVertexBuffer(device, cube.getVertices());
+  const edgeBuffer = createEdgeBuffer(device, cube.getEdges());
+
+  // Set up pipelines
+  const cellShaderModule = createCellShaderModule(device);
+  const edgeShaderModule = createEdgeShaderModule(device);
+  const cellPipeline = createCellPipeline(device, canvasFormat, cellShaderModule);
+  const edgePipeline = createEdgePipeline(device, canvasFormat, edgeShaderModule);
+
+  setInterval((cube, device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline) => {
+    cube.rotate(0, Math.PI / 10)
+    // Call renderCube to actually render it on the canvas
+    device.queue.writeBuffer(vertexBuffer, 0, cube.getVertices());
+    device.queue.writeBuffer(edgeBuffer, 0, cube.getEdges());
+    renderCube(device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline, cube.getVertices(), cube.getEdges());
+  }, 100, cube, device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline);
+
+}
+
+
+// Function to create and return the vertex buffer
+function createVertexBuffer(device, vertices) {
+  const vertexBuffer = device.createBuffer({//creates a buffer (memory gpu can access)
     label: "Cell vertices",// give it name, good for error messages
     size: vertices.byteLength,// set the size of the buffer, very important as its immutable
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST, // sets the useage flags | means both flags are active so its used for both
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,// sets the useage flags | means both flags are active so its used for both
   });
-  device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices);
+  device.queue.writeBuffer(vertexBuffer, 0, vertices);
+  return vertexBuffer;
+}
 
-  const vertexBufferLayout = { //sets the layout of that data in the buffer to tell the gpu how to read it
-    arrayStride: 12, //how many points of data to skip for each data point (3d point in this case) so float (4)*3(cause its 3d)
-    attributes: [{ //a list of attributes in this case there is only a point so its much simpler, but it can be used to give it a direction vector or color too
-      format: "float32x3", //vec3<f32> the data type
-      offset: 0,//offset from the start of the datapoint, in this case its 0 cause there is no additional data
-      shaderLocation: 0, // Position, see vertex shader (value is between 0 and 15)
-    }],
-  };
+// Function to create and return the edge buffer
+function createEdgeBuffer(device, edges) {
+  const edgeBuffer = device.createBuffer({
+    label: "Edge vertices",
+    size: edges.byteLength,
+    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(edgeBuffer, 0, edges);
+  return edgeBuffer;
+}
 
-  const cellShaderModule = device.createShaderModule({ //shader module
+// Function to create the cell shader module
+function createCellShaderModule(device) {
+  return device.createShaderModule({
     label: "Cell shader",
     code: `
-        @vertex
-        fn vertexMain(@location(0) pos: vec3f) ->
-          @builtin(position) vec4f {
-          return vec4f(pos, 1);
-        }
-        @fragment
-        fn fragmentMain() -> @location(0) vec4f {
-          return vec4f(.74, 0.14, 0, 1); // (Red, Green, Blue, Alpha)
-        }
-      `
+      @vertex
+      fn vertexMain(@location(0) pos: vec3f) -> @builtin(position) vec4f {
+        return vec4f(pos, 1);
+      }
+      @fragment
+      fn fragmentMain() -> @location(0) vec4f {
+        return vec4f(.74, 0.14, 0, 1); // (Red, Green, Blue, Alpha)
+      }
+    `
   });
+}
 
-  const edgeShaderModule = device.createShaderModule({
+// Function to create the edge shader module
+function createEdgeShaderModule(device) {
+  return device.createShaderModule({
     label: "Edge shader",
     code: `
       @vertex
@@ -152,80 +181,94 @@ async function initWebGPU() {
       fn fragmentMain() -> @location(0) vec4f {
         return vec4f(0, 0, 0, 1); // Black for the outline
       }
-    `,
+    `
   });
+}
 
-  const cellPipeline = device.createRenderPipeline({///controls data and shaders to create the geometry and such
-    label: "Cell pipeline", //name
+// Function to create the cell render pipeline
+function createCellPipeline(device, canvasFormat, cellShaderModule) {
+  return device.createRenderPipeline({
+    label: "Cell pipeline",
     layout: "auto",
     vertex: {
       module: cellShaderModule,
       entryPoint: "vertexMain",
-      buffers: [vertexBufferLayout]
+      buffers: [{
+        arrayStride: 12,
+        attributes: [{
+          format: "float32x3",
+          offset: 0,
+          shaderLocation: 0,
+        }]
+      }]
     },
     fragment: {
       module: cellShaderModule,
       entryPoint: "fragmentMain",
-      targets: [{
-        format: canvasFormat
-      }]
+      targets: [{ format: canvasFormat }]
     }
   });
+}
 
-  const edgePipeline = device.createRenderPipeline({
-    label: "Edge pipeline",
+// Function to create the edge render pipeline
+function createEdgePipeline(device, canvasFormat, edgeShaderModule) {
+  return device.createRenderPipeline({//controls data and shaders to create the geometry and such
+    label: "Edge pipeline",//name
     layout: "auto",
     primitive: {
-      topology: "line-list", // Change this to line-list for edges
+      topology: "line-list",//means it draws lines instead of triangles
     },
-    vertex: {
+    vertex: {//controls data and shaders to create the geometry and such
       module: edgeShaderModule,
       entryPoint: "vertexMain",
-      buffers: [vertexBufferLayout],
+      buffers: [{//buffer layout -> layout of that data in the buffer to tell the gpu how to read it
+        arrayStride: 12, //how many points of data to skip for each data point (3d point in this case) so float (4)*3(cause its 3d)
+        attributes: [{ //a list of attributes in this case there is only a point so its much simpler, but it can be used to give it a direction vector or color too
+          format: "float32x3", //vec3<f32> the data type
+          offset: 0,//offset from the start of the datapoint, in this case its 0 cause there is no additional data
+          shaderLocation: 0,// Position, see vertex shader (value is between 0 and 15)
+        }]
+      }]
     },
     fragment: {
       module: edgeShaderModule,
       entryPoint: "fragmentMain",
-      targets: [{ format: canvasFormat }],
-    },
+      targets: [{ format: canvasFormat }]
+    }
   });
+}
 
-  const encoder = device.createCommandEncoder(); //used to record commands to the gpu
-
-
-
+// Function that actually performs the render operation
+function renderCube(device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline, vertices, edges) {
+  const encoder = device.createCommandEncoder();//used to record commands to the gpu
   const pass = encoder.beginRenderPass({//every pass starts with this
     colorAttachments: [{
       view: context.getCurrentTexture().createView(),//returns a texture with a pixel width and height matching the canvas's width and height attributes and format
       loadOp: "clear", //clears previously drawn stuff if i understand right
-      clearValue: { r: 0.16, g: 0, b: 0.31, a: 1 }, // New line
-      storeOp: "store", //not sure
-    }]
+      clearValue: { r: 0.16, g: 0, b: 0.31, a: 1 },//the color in which it clears
+      storeOp: "store",//not sure
+    }],
   });
 
-  const edges = cube.getEdges();
-  const edgeBuffer = device.createBuffer({
-    label: "Edge vertices",
-    size: edges.byteLength,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(edgeBuffer, /*bufferOffset=*/0, edges);
-
+  // Render cube faces
   pass.setPipeline(cellPipeline);
   pass.setVertexBuffer(0, vertexBuffer);
-  pass.draw(vertices.length / 3); // 6 vertices
+  pass.draw(vertices.length / 3);  // 6 vertices for cube faces
 
+  // Render edges (outline)
   pass.setPipeline(edgePipeline);
   pass.setVertexBuffer(0, edgeBuffer);
-  pass.draw(edges.length / 3); // Draw the outline
+  pass.draw(edges.length / 3);  // Number of lines (edges)
 
   pass.end();
   const commandBuffer = encoder.finish();//basically a record of the commmands and is used to send to the gpu
   device.queue.submit([commandBuffer]);//sends the buffer to the queue
   device.queue.submit([encoder.finish()]);//activates the queue i think?
-  console.log("so far so good");
+
+  console.log("Rendering completed");
 }
 
-
+function show() {
+}
 
 window.addEventListener("load", initWebGPU);
