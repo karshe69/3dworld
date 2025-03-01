@@ -15,6 +15,8 @@ class Cube {
       { x: x - xw, y: y + yw, z: z - zw + 0.5 },
       { x: x + xw, y: y - yw, z: z - zw + 0.5 },
       { x: x - xw, y: y - yw, z: z - zw + 0.5 }];
+    this.faceBuffers = []
+    this.edgeBuffers = []
   }
   rotate(xa = 0, ya = 0, za = 0) {
     const cosX = Math.cos(xa), sinX = Math.sin(xa);
@@ -51,36 +53,76 @@ class Cube {
       v.z = z + this.z;
     }
   }
-  getVertices() {
+  getEdges() {
     const indices = [
-      0, 1, 2, 1, 2, 3,  // Front face
-      4, 5, 6, 5, 6, 7,  // Back face
-      1, 5, 7, 1, 7, 3,  // Left face
-      0, 4, 6, 0, 6, 2,  // Right face
-      0, 1, 5, 0, 5, 4,  // Top face
-      2, 3, 7, 2, 7, 6   // Bottom face
+      [0, 1], [0, 2], [2, 3], [3, 1], // Front edges  
+      [4, 5], [5, 7], [6, 7], [6, 4], // Back edges
+      [0, 4], [1, 5], [2, 6], [3, 7] // Connecting edges
     ];
 
     let vertexArray = [];
-    for (let i of indices) {
-      vertexArray.push(this.vertices[i].x, this.vertices[i].y, this.vertices[i].z);
+    for (let i = 0; i < indices.length; i++) {
+      vertexArray.push([])
+      for (let j of indices[i]) {
+        vertexArray[i].push(this.vertices[j].x, this.vertices[j].y, this.vertices[j].z);
+      }
+      vertexArray[i] = new Float32Array(vertexArray[i])
     }
-
-    return new Float32Array(vertexArray);
+    return vertexArray;
   }
-  getEdges() {
-    const edges = [
-      0, 1, 0, 2, 2, 3, 3, 1, // Front edges  
-      4, 5, 5, 7, 6, 7, 6, 4, // Back edges
-      0, 4, 1, 5, 2, 6, 3, 7 // Connecting edges
+  getFaces() {
+    const indices = [
+      [0, 1, 2, 1, 2, 3],  // Front face
+      [4, 5, 6, 5, 6, 7],  // Back face
+      [1, 5, 7, 1, 7, 3],  // Left face
+      [0, 4, 6, 0, 6, 2],  // Right face
+      [0, 1, 5, 0, 5, 4],  // Top face
+      [2, 3, 7, 2, 7, 6]   // Bottom face
     ];
 
-    let edgeArray = [];
-    for (let i of edges) {
-      edgeArray.push(this.vertices[i].x, this.vertices[i].y, this.vertices[i].z);
+    let vertexArray = [];
+    for (let i = 0; i < indices.length; i++) {
+      vertexArray.push([])
+      for (let j of indices[i]) {
+        vertexArray[i].push(this.vertices[j].x, this.vertices[j].y, this.vertices[j].z);
+      }
+      vertexArray[i] = new Float32Array(vertexArray[i])
     }
-
-    return new Float32Array(edgeArray);
+    return vertexArray;
+  }
+  initiateFaceForRender(device, canvasFormat) {
+    const faceShaderModule = createFaceShaderModule(device);
+    let faces = this.getFaces()
+    this.facePipeline = createPipeline(device, canvasFormat, faceShaderModule, "face pipeline",)
+    for (let i = 0; i < faces.length; i++) {
+      this.faceBuffers.push(createBuffer(device, faces[i], "Face vertices" + i))
+    }
+  }
+  initiateEdgeForRender(device, canvasFormat) {
+    const edgeShaderModule = createEdgeShaderModule(device);
+    let edges = this.getEdges()
+    this.edgePipeline = createPipeline(device, canvasFormat, edgeShaderModule, "Edge pipeline", "line-list");
+    for (let i = 0; i < edges.length; i++) {
+      this.edgeBuffers.push(createBuffer(device, edges[i], "edge vertices" + i))
+    }
+  }
+  faceRender(device) {
+    let toRenderArray = []
+    let faces = this.getFaces()
+    for (let i = 0; i < this.faceBuffers.length; i++) {
+      device.queue.writeBuffer(this.faceBuffers[i], 0, faces[i]);
+      toRenderArray.push([this.faceBuffers[i], 6, this.facePipeline])
+    }
+    return toRenderArray
+  }
+  edgeRender(device) {
+    let toRenderArray = []
+    let edges = this.getEdges()
+    for (let i = 0; i < this.edgeBuffers.length; i++) {
+      device.queue.writeBuffer(this.edgeBuffers[i], 0, edges[i]);
+      toRenderArray.push([this.edgeBuffers[i], 2, this.edgePipeline])
+    }
+    return toRenderArray
   }
 }
 
@@ -96,6 +138,7 @@ async function initWebGPU() {
     throw new Error("No appropriate GPUAdapter found.");
   }
   const canvas = document.getElementById("canvas"); // canvas element from html
+
   const device = await adapter.requestDevice();
   const context = canvas.getContext("webgpu");
   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();//format is the actual data format used for the best results in the gpu
@@ -105,67 +148,39 @@ async function initWebGPU() {
   });
 
   const cube = new Cube()
-  cube.rotate(Math.PI / 4, Math.PI / 3, Math.PI / 4)
+  cube.rotate(Math.PI / 4, Math.PI / 5, Math.PI / 4)
+  const cube2 = new Cube(0, 0, 0, 0.1, 0.1, 0.1)
+  cube2.initiateFaceForRender(device, canvasFormat)
+  cube2.initiateEdgeForRender(device, canvasFormat)
 
 
-  // Create the buffers once
-  const vertexBuffer = createVertexBuffer(device, cube.getVertices());
-  const edgeBuffer = createEdgeBuffer(device, cube.getEdges());
+  // Set up both pipelines and buffers for both faces and edges of the cube
+  cube.initiateFaceForRender(device, canvasFormat)
+  cube.initiateEdgeForRender(device, canvasFormat)
+  const toRender = []//1: buffer, 2: amount of vertices, 3: pipeline
 
-  // Set up pipelines
-  const cellShaderModule = createCellShaderModule(device);
-  const edgeShaderModule = createEdgeShaderModule(device);
-  const cellPipeline = createCellPipeline(device, canvasFormat, cellShaderModule);
-  const edgePipeline = createEdgePipeline(device, canvasFormat, edgeShaderModule);
-
-  setInterval((cube, device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline) => {
-    cube.rotate(0, Math.PI / 10)
-    // Call renderCube to actually render it on the canvas
-    device.queue.writeBuffer(vertexBuffer, 0, cube.getVertices());
-    device.queue.writeBuffer(edgeBuffer, 0, cube.getEdges());
-    renderCube(device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline, cube.getVertices(), cube.getEdges());
-  }, 100, cube, device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline);
+  setInterval((device, context, toRender, cube, cube2) => {
+    cube.rotate(Math.PI / 1000, Math.PI / 300, Math.PI / 950)
+    cube2.rotate(Math.PI / 1000, Math.PI / 300, Math.PI / 950)
+    toRender.push(...cube.faceRender(device))
+    toRender.push(...cube2.faceRender(device))
+    toRender.push(...cube.edgeRender(device))
+    toRender.push(...cube2.edgeRender(device))
+    // Call render to actually render it on the canvas
+    render(device, context, toRender);
+  }, 10, device, context, toRender, cube, cube2);
 
 }
 
-
-// Function to create and return the vertex buffer
-function createVertexBuffer(device, vertices) {
+// Function to create and return the buffer
+function createBuffer(device, vertices, name) {
   const vertexBuffer = device.createBuffer({//creates a buffer (memory gpu can access)
-    label: "Cell vertices",// give it name, good for error messages
+    label: name,// give it name, good for error messages
     size: vertices.byteLength,// set the size of the buffer, very important as its immutable
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,// sets the useage flags | means both flags are active so its used for both
   });
   device.queue.writeBuffer(vertexBuffer, 0, vertices);
   return vertexBuffer;
-}
-
-// Function to create and return the edge buffer
-function createEdgeBuffer(device, edges) {
-  const edgeBuffer = device.createBuffer({
-    label: "Edge vertices",
-    size: edges.byteLength,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(edgeBuffer, 0, edges);
-  return edgeBuffer;
-}
-
-// Function to create the cell shader module
-function createCellShaderModule(device) {
-  return device.createShaderModule({
-    label: "Cell shader",
-    code: `
-      @vertex
-      fn vertexMain(@location(0) pos: vec3f) -> @builtin(position) vec4f {
-        return vec4f(pos, 1);
-      }
-      @fragment
-      fn fragmentMain() -> @location(0) vec4f {
-        return vec4f(.74, 0.14, 0, 1); // (Red, Green, Blue, Alpha)
-      }
-    `
-  });
 }
 
 // Function to create the edge shader module
@@ -179,47 +194,39 @@ function createEdgeShaderModule(device) {
       }
       @fragment
       fn fragmentMain() -> @location(0) vec4f {
-        return vec4f(0, 0, 0, 1); // Black for the outline
+        return vec4f(0.40, 0.60, 0.70, 1); // Black for the outline
       }
     `
   });
 }
 
-// Function to create the cell render pipeline
-function createCellPipeline(device, canvasFormat, cellShaderModule) {
-  return device.createRenderPipeline({
-    label: "Cell pipeline",
-    layout: "auto",
-    vertex: {
-      module: cellShaderModule,
-      entryPoint: "vertexMain",
-      buffers: [{
-        arrayStride: 12,
-        attributes: [{
-          format: "float32x3",
-          offset: 0,
-          shaderLocation: 0,
-        }]
-      }]
-    },
-    fragment: {
-      module: cellShaderModule,
-      entryPoint: "fragmentMain",
-      targets: [{ format: canvasFormat }]
-    }
+// Function to create the cell shader module
+function createFaceShaderModule(device) {
+  return device.createShaderModule({
+    label: "Cell shader",
+    code: `
+      @vertex
+      fn vertexMain(@location(0) pos: vec3f) -> @builtin(position) vec4f {
+        return vec4f(pos, 1);
+      }
+      @fragment
+      fn fragmentMain() -> @location(0) vec4f {
+        return vec4f(.74, 0.24, 0.5, 1); // (Red, Green, Blue, Alpha)
+      }
+    `
   });
 }
 
-// Function to create the edge render pipeline
-function createEdgePipeline(device, canvasFormat, edgeShaderModule) {
+// Function to create a render pipeline
+function createPipeline(device, canvasFormat, shaderModule, name, topology = "triangle-list") {
   return device.createRenderPipeline({//controls data and shaders to create the geometry and such
-    label: "Edge pipeline",//name
+    label: name,//name
     layout: "auto",
     primitive: {
-      topology: "line-list",//means it draws lines instead of triangles
+      topology: topology,//means it draws lines instead of triangles
     },
     vertex: {//controls data and shaders to create the geometry and such
-      module: edgeShaderModule,
+      module: shaderModule,
       entryPoint: "vertexMain",
       buffers: [{//buffer layout -> layout of that data in the buffer to tell the gpu how to read it
         arrayStride: 12, //how many points of data to skip for each data point (3d point in this case) so float (4)*3(cause its 3d)
@@ -231,7 +238,7 @@ function createEdgePipeline(device, canvasFormat, edgeShaderModule) {
       }]
     },
     fragment: {
-      module: edgeShaderModule,
+      module: shaderModule,
       entryPoint: "fragmentMain",
       targets: [{ format: canvasFormat }]
     }
@@ -239,7 +246,7 @@ function createEdgePipeline(device, canvasFormat, edgeShaderModule) {
 }
 
 // Function that actually performs the render operation
-function renderCube(device, context, vertexBuffer, edgeBuffer, cellPipeline, edgePipeline, vertices, edges) {
+function render(device, context, toRender) {
   const encoder = device.createCommandEncoder();//used to record commands to the gpu
   const pass = encoder.beginRenderPass({//every pass starts with this
     colorAttachments: [{
@@ -250,15 +257,14 @@ function renderCube(device, context, vertexBuffer, edgeBuffer, cellPipeline, edg
     }],
   });
 
-  // Render cube faces
-  pass.setPipeline(cellPipeline);
-  pass.setVertexBuffer(0, vertexBuffer);
-  pass.draw(vertices.length / 3);  // 6 vertices for cube faces
-
-  // Render edges (outline)
-  pass.setPipeline(edgePipeline);
-  pass.setVertexBuffer(0, edgeBuffer);
-  pass.draw(edges.length / 3);  // Number of lines (edges)
+  //render everything thats been committed to the toRender Array!!
+  let currentRender
+  while (toRender.length > 0) {
+    currentRender = toRender.shift()
+    pass.setPipeline(currentRender[2])
+    pass.setVertexBuffer(0, currentRender[0])
+    pass.draw(currentRender[1]); // 6 vertices for
+  }
 
   pass.end();
   const commandBuffer = encoder.finish();//basically a record of the commmands and is used to send to the gpu
@@ -266,9 +272,6 @@ function renderCube(device, context, vertexBuffer, edgeBuffer, cellPipeline, edg
   device.queue.submit([encoder.finish()]);//activates the queue i think?
 
   console.log("Rendering completed");
-}
-
-function show() {
 }
 
 window.addEventListener("load", initWebGPU);
